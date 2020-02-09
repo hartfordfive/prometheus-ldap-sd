@@ -8,7 +8,7 @@ import (
 )
 
 // Search performs the search with the supplied parameters to return the matching host.
-func Search(conf LdapConfig) {
+func LdapSearch(conf LdapConfig) {
 	l, err := ldap.DialURL(fmt.Sprintf("ldap://%s:%d", conf.Host, conf.Port))
 	if err != nil {
 		log.Fatal(err)
@@ -16,10 +16,10 @@ func Search(conf LdapConfig) {
 	defer l.Close()
 
 	searchRequest := ldap.NewSearchRequest(
-		"dc=example,dc=com", // The base dn to search
+		conf.BaseDN, // The base dn to search
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-		"(&(objectClass=organizationalPerson))", // The filter to apply
-		[]string{"dn", "cn"},                    // A list attributes to retrieve
+		conf.Filter,     // The filter to apply
+		conf.Attributes, // A list attributes to retrieve
 		nil,
 	)
 

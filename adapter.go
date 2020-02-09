@@ -24,10 +24,9 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/hartfordfive/prometheus-activedirectory-sd/utils"
-
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+	"github.com/hartfordfive/prometheus-activedirectory-sd/utils"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/discovery"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
@@ -69,7 +68,13 @@ func mapToArray(m map[string]*ldapSD) []ldapSD {
 
 func generateTargetGroups(allTargetGroups map[string][]*targetgroup.Group) map[string]*ldapSD {
 
-	hosts := ldap.Search()
+	hosts := utils.LdapSearch(utils.LdapConfig{
+		Host:       "myldap.com",
+		Port:       389,
+		BaseDN:     "dc=example,dc=com",
+		Filter:     "(&(objectClass=organizationalPerson))",
+		Attributes: []string{"dn", "cn"},
+	})
 
 	groups := make(map[string]*ldapSD)
 	for k, sdTargetGroups := range allTargetGroups {
