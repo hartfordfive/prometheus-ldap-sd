@@ -16,9 +16,7 @@ ldap_config:
     desktops: 5000
     servers: 5000
   #filter: "" # default is always (&(objectClass=computer))
-  attributes: 
-    - name
-    - dNSHostName
+  attributes: # by default, the follow attributes are automatically fetched: name, dNSHostName
     - operatingSystem
   cache_dir: cache
   cache_ttl: 60

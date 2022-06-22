@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -21,7 +22,10 @@ var (
 	searchPagingSize uint32 = 100
 	matchFirstCap           = regexp.MustCompile("(.)([A-Z][a-z]+)")
 	matchAllCap             = regexp.MustCompile("([a-z0-9])([A-Z])")
+	baseAttributes          = []string{"name", "dNSHostName"}
 )
+
+const ldapFilter = "(&(objectClass=computer))"
 
 type LdapStore struct {
 	shutdownChan chan bool
@@ -46,14 +50,21 @@ func keyToSnakeCase(str string) string {
 	return strings.ToLower(snake)
 }
 
+func isBaseAttribute(name string, baseAttributes []string) bool {
+	for _, v := range baseAttributes {
+		if v == name {
+			return true
+		}
+	}
+	return false
+}
+
 func NewLdapStore(
 	shutdownChan chan bool,
 	url string,
 	bindDN string,
-	baseDnMapping map[string][]string,
-	groupExporterPortMapping map[string]int,
-	filter string,
-	attributes []string,
+	baseDnMappings map[string]*config.BaseDnMapping,
+	defaultAttributes []string,
 	passEnvVar string,
 	authenticated bool,
 	unsecured bool,
@@ -73,17 +84,15 @@ func NewLdapStore(
 		shutdownChan: shutdownChan,
 		conn:         conn,
 		Config: &config.LdapConfig{
-			URL:                      url,
-			BindDN:                   bindDN,
-			BaseDnMapping:            baseDnMapping,
-			GroupExporterPortMapping: groupExporterPortMapping,
-			Filter:                   filter,
-			Attributes:               attributes,
-			PasswordEnvVar:           passEnvVar,
-			Authenticated:            authenticated,
-			Unsecured:                unsecured,
-			CacheDir:                 cacheDir,
-			CacheTTL:                 cacheTTL,
+			URL:               url,
+			BindDN:            bindDN,
+			BaseDnMappings:    baseDnMappings,
+			DefaultAttributes: defaultAttributes,
+			PasswordEnvVar:    passEnvVar,
+			Authenticated:     authenticated,
+			Unsecured:         unsecured,
+			CacheDir:          cacheDir,
+			CacheTTL:          cacheTTL,
 		},
 		cache: cache,
 	}, nil
@@ -120,6 +129,8 @@ func getLdapConn(ldapURL, bindDN string, authenticated bool, passEnvVar string, 
 
 func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 	var entries []LdapObject
+	var attributesList []string
+	var obj LdapObject
 
 	// Fetch objects from cache if they are present and still valid
 	err := s.cache.Get(targetGroup, &entries)
@@ -145,12 +156,26 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 		logger.Logger.Error("Discovery refresh cancelled")
 	default:
 
-		logger.Logger.Info("Refreshing object listing from LDAP", zap.String("group_name", targetGroup))
+		logger.Logger.Debug("Refreshing object listing from LDAP", zap.String("group_name", targetGroup))
 
-		for _, baseDn := range s.Config.BaseDnMapping[targetGroup] {
+		baseDnMapping := s.Config.BaseDnMappings[targetGroup]
+		attributesList = append(s.Config.DefaultAttributes, baseAttributes...)
+
+		if len(baseDnMapping.Attributes) >= 1 {
+			for _, attrib := range baseDnMapping.Attributes {
+				attributesList = append(attributesList, attrib)
+			}
+		}
+
+		if baseDnMapping == nil {
+			return entries, errors.New("No base DNs specified for group")
+		}
+
+		for _, baseDn := range baseDnMapping.BaseDnList {
 			logger.Logger.Debug("Getting LDAP objects corresponding to base DN",
 				zap.String("base_dn", baseDn),
 			)
+
 			search := ldap.NewSearchRequest(
 				baseDn,
 				ldap.ScopeWholeSubtree,
@@ -158,8 +183,8 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 				0,
 				0,
 				false,
-				s.Config.Filter, // the filter
-				s.Config.Attributes,
+				ldapFilter, // the filter
+				attributesList,
 				[]ldap.Control{})
 
 			logger.Logger.Debug("Runing SearchWithPaging")
@@ -177,24 +202,29 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 				zap.String("base_dn", baseDn),
 				zap.Int("total_objects", len(results.Entries)),
 			)
-			var obj LdapObject
+
+			obj = LdapObject{}
 			for _, e := range results.Entries {
 				if e.GetAttributeValue("dNSHostName") == "" {
+					logger.Logger.Warn("Skipping object as it's missing the dNSHostName attribute", zap.Any("name", e.GetAttributeValue("name")))
 					continue
 				}
 				obj = LdapObject{
 					Hostname:   e.GetAttributeValue("name"),
 					Attributes: map[string]string{},
 				}
-				if len(s.Config.Attributes) >= 1 {
-					for _, attrib := range s.Config.Attributes {
+
+				if len(attributesList) >= 1 {
+					for _, attrib := range attributesList {
 						if attrib != "name" {
 							obj.Attributes[attrib] = e.GetAttributeValue(attrib)
 						}
 					}
 				}
+
 				//logger.Logger.Debug("Printing object", zap.Any("object", obj))
 				entries = append(entries, obj)
+
 			}
 
 		}
@@ -215,28 +245,35 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 func (s *LdapStore) Serialize(targetGroup string) (string, error) {
 
 	res, _ := s.RunDiscovery(targetGroup)
-	tg := TargetGroup{
-		Targets: []string{},
-		Labels:  map[string]string{},
-	}
+
+	tgList := []TargetGroup{}
 
 	for _, ldapObject := range res {
+
+		tg := TargetGroup{
+			Targets: []string{},
+			Labels:  map[string]string{},
+		}
+
 		tg.Targets = append(tg.Targets, strings.Join(
 			[]string{
 				ldapObject.Attributes["dNSHostName"],
-				strconv.Itoa(s.Config.GroupExporterPortMapping[targetGroup]),
+				strconv.Itoa(s.Config.BaseDnMappings[targetGroup].ExporterPort),
 			}, ":"))
+
 		for k, v := range ldapObject.Attributes {
-			if k == "dNSHostName" {
+			if isBaseAttribute(k, baseAttributes) {
 				continue
 			}
 			if _, ok := tg.Labels[k]; !ok {
-				tg.Labels[fmt.Sprintf("__meta_%s", keyToSnakeCase(k))] = v
+				tg.Labels[fmt.Sprintf("__meta_ldap_%s", keyToSnakeCase(k))] = v
 			}
 		}
+
+		tgList = append(tgList, tg)
 	}
 
-	output, _ := json.Marshal([]TargetGroup{tg})
+	output, _ := json.Marshal(tgList)
 	return string(output), nil
 
 }
