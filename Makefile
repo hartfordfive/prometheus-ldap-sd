@@ -43,18 +43,18 @@ all: cleanall build-all
 # Cross compilation
 build: cleanall
 	echo "Output: ${BUILD_DIR}/${BINARY_NAME}"
-	CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X $(PACKAGE_BASE)/version.Version=$(VERSION)" -o ${BUILD_DIR}/$(BINARY_NAME) -v
+	CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X $(PACKAGE_BASE)/version.Version=$(VERSION)" -o ${BUILD_DIR}/$(BINARY_NAME)
 
 build-all: cleanall
-	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-linux-$(ARCH) -v
-	CGO_ENABLED=0 GOOS=darwin GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-darwin-$(ARCH) -v
+	CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-linux-$(ARCH)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=${ARCH} $(GOBUILD) -ldflags "-s -w -X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=$(BUILDDATE) -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-darwin-$(ARCH)
 
 build-release: all
 	tar -cvzf $(BASE_NAME)-$(VERSION)-linux-$(ARCH).tar.gz ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-linux-$(ARCH)
 	tar -cvzf $(BASE_NAME)-$(VERSION)-darwin-$(ARCH).tar.gz ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-darwin-$(ARCH)
 
 build-debug:
-	CGO_ENABLED=0 GOOS=${OS} GOARCH=amd64 $(GOBUILD) -ldflags "-X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=${BUILDDATE} -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-${OS}-$(ARCH)-debug -v
+	CGO_ENABLED=0 GOOS=${OS} GOARCH=amd64 $(GOBUILD) -ldflags "-X $(PACKAGE_BASE)/version.CommitHash=$(GITHASH) -X $(PACKAGE_BASE)/version.BuildDate=${BUILDDATE} -X ${PACKAGE_BASE}/version.Version=${VERSION}" -o ${BUILD_DIR}/$(BASE_NAME)-$(VERSION)-${OS}-$(ARCH)-debug
 
 build-docker:
 	docker build -t prom-http-sd-server:$(VERSION) --build-arg VERSION=$(VERSION) -f Dockerfile .

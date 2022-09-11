@@ -5,19 +5,20 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/config"
-	"github.com/hartfordfive/prometheus-ldap-sd-server/handler"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/logger"
+	"github.com/hartfordfive/prometheus-ldap-sd-server/metrics"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/store"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/version"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"go.uber.org/zap"
@@ -27,21 +28,12 @@ import (
 var dataStore store.DataStore
 
 var (
-	metricHttpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name: "ldap_sd_req_duration_seconds",
-		Help: "Duration of HTTP requests.",
-	}, []string{"path"})
-)
-
-var (
 	flagConfPath       *string
 	flagDebug          *bool
 	flagVersion        *bool
 	flagValidateConfig *bool
 	log                *zap.Logger
 	conf               *config.Config
-	shutdownChan       chan bool
-	interruptChan      chan os.Signal
 )
 
 func init() {
@@ -55,6 +47,14 @@ func init() {
 	flagDebug = flag.Bool("debug", false, "Enable debug mode")
 	flagValidateConfig = flag.Bool("validate", false, "Validate config and exit")
 	flag.Parse()
+
+	prometheus.Register(metrics.MetricBuildInfo)
+	prometheus.Register(metrics.MetricServerRequestsFailed)
+	prometheus.Register(metrics.MetricServerRequests)
+	prometheus.Register(metrics.MetricRequestsFromCache)
+	prometheus.Register(metrics.MetricCacheUpdateSuccess)
+	prometheus.Register(metrics.MetricCacheUpdateFail)
+	prometheus.Register(metrics.MetricReconnect)
 
 	var log *zap.Logger
 	var loggerErr error
@@ -88,9 +88,6 @@ func init() {
 		os.Exit(0)
 	}
 
-	interruptChan = make(chan os.Signal, 1)
-	signal.Notify(interruptChan, os.Interrupt, syscall.SIGTERM)
-
 	cnf, err := config.NewConfig(*flagConfPath)
 
 	if err != nil {
@@ -104,11 +101,8 @@ func init() {
 // prometheusMiddleware implements mux.MiddlewareFunc.
 func prometheusMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route := mux.CurrentRoute(r)
-		path, _ := route.GetPathTemplate()
-		timer := prometheus.NewTimer(metricHttpDuration.WithLabelValues(path))
-		next.ServeHTTP(w, r)
-		timer.ObserveDuration()
+		rw := metrics.NewResponseWriter(w)
+		next.ServeHTTP(rw, r)
 	})
 }
 
@@ -131,20 +125,16 @@ func main() {
 	}
 
 	var err error
-	shutdownChan = make(chan bool)
 
 	logger.Logger.Info("Starting server")
 
 	config.GlobalConfig = conf
 
-	logger.Logger.Info("Setting cache TTL",
-		zap.Int("seconds", conf.LdapConfig.CacheTTL),
-	)
+	logger.Logger.Info(fmt.Sprintf("Cache TTL set to %ds", conf.LdapConfig.CacheTTL))
 
 	// Init datastore
 	logger.Logger.Sugar().Infof("Starting LDAP datastore")
 	store.StoreInstance, err = store.NewLdapStore(
-		shutdownChan,
 		conf.LdapConfig.URL,
 		conf.LdapConfig.BindDN,
 		conf.LdapConfig.BaseDnMappings,
@@ -160,21 +150,78 @@ func main() {
 		os.Exit(1)
 	}
 
+	metrics.MetricBuildInfo.WithLabelValues(version.Version).Inc()
+	for targetGroup, _ := range conf.LdapConfig.BaseDnMappings {
+		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup)
+		metrics.MetricServerRequests.WithLabelValues(targetGroup)
+		metrics.MetricRequestsFromCache.WithLabelValues(targetGroup)
+		metrics.MetricCacheUpdateSuccess.WithLabelValues(targetGroup)
+		metrics.MetricCacheUpdateFail.WithLabelValues(targetGroup)
+		metrics.MetricReconnect.Add(0)
+	}
+
 	// Init web server
-	r := mux.NewRouter()
-	r.HandleFunc("/targets", handler.ShowTargetsHandler).Methods("GET")
-	r.HandleFunc("/config", handler.ShowConfigHandler).Methods("GET")
-	r.Handle("/metrics", promhttp.Handler()).Methods("GET")
-	r.HandleFunc("/health", handler.HealthHandler).Methods("GET")
 
 	listenAddr := fmt.Sprintf("%s:%d", conf.Host, conf.Port)
 
+	r := mux.NewRouter()
 	srv := &http.Server{
 		Handler:      r,
 		Addr:         listenAddr,
 		WriteTimeout: 10 * time.Second,
 		ReadTimeout:  10 * time.Second,
 	}
+
+	interruptChan := make(chan os.Signal, 1)
+	signal.Notify(interruptChan, os.Interrupt, syscall.SIGTERM)
+
+	r.HandleFunc("/targets", func(w http.ResponseWriter, req *http.Request) {
+		logger.Logger.Debug("Target listing requested", zap.String("remote_addr", req.RemoteAddr))
+		w.Header().Set("Content-Type", "application/json")
+		targetGroup := req.URL.Query().Get("targetGroup")
+		dataStore := store.StoreInstance
+		res, err := dataStore.Serialize(targetGroup)
+		if err != nil {
+			if err == err.(*store.LdapStoreErrorMaxReconnects) {
+				logger.Logger.Error(err.Error())
+				interruptChan <- syscall.SIGTERM
+				return
+			}
+			fmt.Fprint(w, "[]\n")
+			return
+		}
+		fmt.Fprintf(w, "%s\n", res)
+	}).Methods("GET")
+
+	r.HandleFunc("/config", func(w http.ResponseWriter, req *http.Request) {
+		logger.Logger.Info("Debug config requested")
+		w.Header().Set("Content-Type", "text/yaml")
+		printCnf, err := config.GlobalConfig.Serialize()
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "%s\n", printCnf)
+	}).Methods("GET")
+
+	r.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
+		dataStore := store.StoreInstance
+		if dataStore.IsReady() {
+			fmt.Fprint(w, "OK")
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, "ERROR")
+		}
+	}).Methods("GET")
+
+	r.Handle("/metrics", promhttp.Handler()).Methods("GET")
+	r.Handle("/debug/pprof/", http.HandlerFunc(pprof.Index))
+	r.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+	r.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+	r.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+	r.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+	r.Handle("/debug/pprof/{cmd}", http.HandlerFunc(pprof.Index)) // special handling for Gorilla mux
 
 	go func() {
 		logger.Logger.Info("Running discovery server",
@@ -185,18 +232,30 @@ func main() {
 		}
 	}()
 
-	killSig := <-interruptChan
-	switch killSig {
-	case os.Interrupt, syscall.SIGTERM:
-		logger.Logger.Info("Received shutdown signal")
-		close(shutdownChan)
-	}
+	var wg sync.WaitGroup
+	wg.Add(1)
 
+	go func() {
+		for {
+			select {
+			case killSig := <-interruptChan:
+				if killSig == os.Interrupt || killSig == syscall.SIGTERM {
+					logger.Logger.Info("Received shutdown notification")
+					wg.Done()
+					return
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	logger.Logger.Info("Shutting down server")
 	store.StoreInstance.Shutdown()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancelHTTPServer := context.WithTimeout(context.Background(), 5*time.Second)
 	defer func() {
-		cancel()
+		cancelHTTPServer()
 	}()
 
 	if err := srv.Shutdown(ctx); err != nil {

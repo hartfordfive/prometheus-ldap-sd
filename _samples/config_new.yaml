@@ -20,6 +20,7 @@ ldap_config:
       - "OU=Datacenter 1,OU=Servers,DC=example,DC=org"
       - "OU=Datacenter 2,OU=Servers,DC=example,DC=org"
       exporter_port: 5000
+      filter: "(&(objectClass=computer))"
   group_exporter_port_mapping:
     desktops: 5000
     servers: 5000
