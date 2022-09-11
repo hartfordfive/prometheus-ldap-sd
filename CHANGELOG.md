@@ -7,6 +7,8 @@
 - Created new `getResults` within the **store** package to allow to contain code relevant to fetching paginated result sets
 - Enabled profiling via the  `/debug/profile` HTTP endpoint
 - Renamed the `/health` endpoint to `/healthz` and implemented a basic verification to return the actual health status of the server.
+- Removed handler package and move moved http handlers to main package
+- Fixed documentation regarding the configuration options.
 
 ### v0.2.0
 - Updating exposed labels prefix name from `_meta_<LABEL_NAME>` to `_meta_ldap_<LABEL_NAME>`
