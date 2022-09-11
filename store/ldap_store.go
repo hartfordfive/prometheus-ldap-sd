@@ -3,7 +3,6 @@ package store
 import (
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,6 +14,7 @@ import (
 	ldap "github.com/go-ldap/ldap/v3"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/config"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/logger"
+	"github.com/hartfordfive/prometheus-ldap-sd-server/metrics"
 	"go.uber.org/zap"
 )
 
@@ -25,13 +25,17 @@ var (
 	baseAttributes          = []string{"name", "dNSHostName"}
 )
 
-const ldapFilter = "(&(objectClass=computer))"
+const (
+	ldapFilter           = "(&(objectClass=computer))"
+	maxReconnectAttempts = 5
+)
 
 type LdapStore struct {
-	shutdownChan chan bool
-	Config       *config.LdapConfig
-	conn         *ldap.Conn
-	cache        cachita.Cache
+	Config            *config.LdapConfig
+	conn              *ldap.Conn
+	cache             cachita.Cache
+	ReconnectAttempts int
+	isReady           bool
 }
 
 type LdapObject struct {
@@ -60,7 +64,6 @@ func isBaseAttribute(name string, baseAttributes []string) bool {
 }
 
 func NewLdapStore(
-	shutdownChan chan bool,
 	url string,
 	bindDN string,
 	baseDnMappings map[string]*config.BaseDnMapping,
@@ -71,30 +74,28 @@ func NewLdapStore(
 	cacheDir string,
 	cacheTTL int) (*LdapStore, error) {
 
-	conn, err := getLdapConn(url, bindDN, authenticated, passEnvVar, unsecured)
-	if err != nil {
-		return nil, err
-	}
 	cache, err := cachita.NewFileCache(cacheDir, time.Duration(cacheTTL)*time.Second, 5*time.Minute)
 	if err != nil {
 		panic(err)
 	}
 
 	return &LdapStore{
-		shutdownChan: shutdownChan,
-		conn:         conn,
+		conn:              nil,
+		ReconnectAttempts: 0,
 		Config: &config.LdapConfig{
-			URL:               url,
-			BindDN:            bindDN,
-			BaseDnMappings:    baseDnMappings,
-			DefaultAttributes: defaultAttributes,
-			PasswordEnvVar:    passEnvVar,
-			Authenticated:     authenticated,
-			Unsecured:         unsecured,
-			CacheDir:          cacheDir,
-			CacheTTL:          cacheTTL,
+			URL:                  url,
+			BindDN:               bindDN,
+			BaseDnMappings:       baseDnMappings,
+			DefaultAttributes:    defaultAttributes,
+			PasswordEnvVar:       passEnvVar,
+			Authenticated:        authenticated,
+			Unsecured:            unsecured,
+			CacheDir:             cacheDir,
+			CacheTTL:             cacheTTL,
+			MaxReconnectAttempts: maxReconnectAttempts,
 		},
-		cache: cache,
+		cache:   cache,
+		isReady: false,
 	}, nil
 
 }
@@ -127,10 +128,88 @@ func getLdapConn(ldapURL, bindDN string, authenticated bool, passEnvVar string, 
 	return l, nil
 }
 
-func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
+func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesList []string) ([]LdapObject, error) {
+	var entries []LdapObject
+	var obj LdapObject
+
+	search := ldap.NewSearchRequest(
+		baseDn,
+		ldap.ScopeWholeSubtree,
+		0,
+		0,
+		0,
+		false,
+		filter, // the filter
+		attributesList,
+		[]ldap.Control{})
+
+	logger.Logger.Debug("Runing SearchWithPaging",
+		zap.String("base_dn", baseDn),
+		zap.String("filter", filter))
+
+	results, err := s.conn.SearchWithPaging(search, searchPagingSize)
+
+	if err != nil {
+		logger.Logger.Error("Could not run search against LDAP",
+			zap.String("base_dn", baseDn),
+			zap.String("error", err.Error()),
+		)
+		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup).Inc()
+		return []LdapObject{}, err
+	}
+
+	logger.Logger.Debug("Building results from discovered objects",
+		zap.String("base_dn", baseDn),
+		zap.Int("total_objects", len(results.Entries)),
+	)
+
+	obj = LdapObject{}
+	for _, e := range results.Entries {
+		if e.GetAttributeValue("dNSHostName") == "" {
+			logger.Logger.Warn("Skipping object as it's missing the dNSHostName attribute", zap.Any("name", e.GetAttributeValue("name")))
+			continue
+		}
+		obj = LdapObject{
+			Hostname:   e.GetAttributeValue("name"),
+			Attributes: map[string]string{},
+		}
+
+		if len(attributesList) >= 1 {
+			for _, attrib := range attributesList {
+				if attrib != "name" {
+					obj.Attributes[attrib] = e.GetAttributeValue(attrib)
+				}
+			}
+		}
+
+		entries = append(entries, obj)
+	}
+
+	return entries, nil
+
+}
+
+func (s *LdapStore) updateCache(targetGroup string, entries []LdapObject, ttl time.Duration) error {
+	err := s.cache.Put(targetGroup, entries, ttl)
+	if err != nil {
+		logger.Logger.Error("Could not store result set in cache",
+			zap.String("cache_key", targetGroup),
+			zap.String("error", err.Error()),
+		)
+		metrics.MetricCacheUpdateFail.WithLabelValues(targetGroup).Inc()
+		return &LdapStoreErrorCacheUpdate{}
+	} else {
+		metrics.MetricCacheUpdateSuccess.WithLabelValues(targetGroup).Inc()
+	}
+	return nil
+}
+
+func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 	var entries []LdapObject
 	var attributesList []string
-	var obj LdapObject
+	var filter string = ldapFilter
+	var resultsErr error
+	var ldapConn *ldap.Conn
 
 	// Fetch objects from cache if they are present and still valid
 	err := s.cache.Get(targetGroup, &entries)
@@ -138,22 +217,46 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 		logger.Logger.Error("Could not fetch existing cached target group entries from cache",
 			zap.Any("error", err.Error()),
 		)
-	} else if len(entries) >= 1 {
-		logger.Logger.Debug("Serving target group entries from disk cache",
-			zap.String("cache_key", targetGroup),
-		)
-		return entries, nil
-	}
-
-	if err == cachita.ErrExpired {
+		return entries, &LdapStoreErrorCacheFetch{}
+	} else if err == cachita.ErrExpired {
 		logger.Logger.Debug("Target group cache entries expired. Fetching updated list.",
 			zap.String("cache_key", targetGroup),
 		)
+	} else if err == nil {
+		logger.Logger.Debug("Serving target group entries from disk cache",
+			zap.String("cache_key", targetGroup),
+		)
+		metrics.MetricRequestsFromCache.WithLabelValues(targetGroup).Inc()
+		return entries, nil
+	}
+
+	if s.conn == nil {
+		// In this case, the results aren't in cache or have expiered, so we need to connect to the remote LDAP
+		// server to fetch them
+		for s.ReconnectAttempts < maxReconnectAttempts {
+			s.ReconnectAttempts++
+			ldapConn, err = getLdapConn(s.Config.URL, s.Config.BindDN, s.Config.Authenticated, s.Config.PasswordEnvVar, s.Config.Unsecured)
+			if err != nil {
+				logger.Logger.Warn("Connection attempt fialed",
+					zap.Int("attempt", s.ReconnectAttempts),
+					zap.String("error", err.Error()),
+				)
+				if s.ReconnectAttempts >= maxReconnectAttempts {
+					s.isReady = false
+					return entries, &LdapStoreErrorMaxReconnects{}
+				}
+
+				time.Sleep(5 * time.Second)
+				continue
+			} else {
+				s.conn = ldapConn
+				break
+			}
+		}
+
 	}
 
 	select {
-	case <-s.shutdownChan:
-		logger.Logger.Error("Discovery refresh cancelled")
 	default:
 
 		logger.Logger.Debug("Refreshing object listing from LDAP", zap.String("group_name", targetGroup))
@@ -168,83 +271,59 @@ func (s *LdapStore) RunDiscovery(targetGroup string) ([]LdapObject, error) {
 		}
 
 		if baseDnMapping == nil {
-			return entries, errors.New("No base DNs specified for group")
+			return entries, &LdapStoreErrorInvalidQuery{}
+		}
+		if len(baseDnMapping.BaseDnList) == 0 && baseDnMapping.Filter == "" {
+			logger.Logger.Error("Could not store result set in cache")
+			return entries, &LdapStoreErrorCacheUpdate{}
 		}
 
-		for _, baseDn := range baseDnMapping.BaseDnList {
-			logger.Logger.Debug("Getting LDAP objects corresponding to base DN",
-				zap.String("base_dn", baseDn),
+		if baseDnMapping.Filter == "(&(objectClass=computer))" || (baseDnMapping.Filter == "" && len(baseDnMapping.BaseDnList) == 0) {
+			return entries, &LdapStoreErrorInvalidQuery{}
+		}
+
+		if baseDnMapping.Filter != "" {
+			filter = baseDnMapping.Filter
+		}
+
+		if baseDnMapping.Filter != "" && len(baseDnMapping.BaseDnList) == 0 {
+			entries, resultsErr = s.getResults(targetGroup, "", filter, attributesList)
+			logger.Logger.Debug("Fetching LDAP objects corresponding to custom filter",
+				zap.String("targetGroup", targetGroup),
+				zap.String("filter", filter),
 			)
-
-			search := ldap.NewSearchRequest(
-				baseDn,
-				ldap.ScopeWholeSubtree,
-				0,
-				0,
-				0,
-				false,
-				ldapFilter, // the filter
-				attributesList,
-				[]ldap.Control{})
-
-			logger.Logger.Debug("Runing SearchWithPaging")
-			results, err := s.conn.SearchWithPaging(search, searchPagingSize)
-
-			if err != nil {
-				logger.Logger.Error("Could not run search against LDAP",
+		} else {
+			for _, baseDn := range baseDnMapping.BaseDnList {
+				logger.Logger.Debug("Fetching LDAP objects corresponding to base DN and filter",
 					zap.String("base_dn", baseDn),
-					zap.String("error", err.Error()),
+					zap.String("filter", filter),
 				)
-				return []LdapObject{}, err
+				entries, resultsErr = s.getResults(targetGroup, baseDn, filter, attributesList)
 			}
-
-			logger.Logger.Debug("Building results from discovered objects",
-				zap.String("base_dn", baseDn),
-				zap.Int("total_objects", len(results.Entries)),
-			)
-
-			obj = LdapObject{}
-			for _, e := range results.Entries {
-				if e.GetAttributeValue("dNSHostName") == "" {
-					logger.Logger.Warn("Skipping object as it's missing the dNSHostName attribute", zap.Any("name", e.GetAttributeValue("name")))
-					continue
-				}
-				obj = LdapObject{
-					Hostname:   e.GetAttributeValue("name"),
-					Attributes: map[string]string{},
-				}
-
-				if len(attributesList) >= 1 {
-					for _, attrib := range attributesList {
-						if attrib != "name" {
-							obj.Attributes[attrib] = e.GetAttributeValue(attrib)
-						}
-					}
-				}
-
-				//logger.Logger.Debug("Printing object", zap.Any("object", obj))
-				entries = append(entries, obj)
-
-			}
-
 		}
+
+		if resultsErr != nil {
+			metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup).Inc()
+		}
+
+		metrics.MetricServerRequests.WithLabelValues(targetGroup).Inc()
+
 	}
 
-	err = s.cache.Put(targetGroup, entries, time.Duration(s.Config.CacheTTL)*time.Second)
-	if err != nil {
-		logger.Logger.Error("Could not store result set in cache",
-			zap.String("cache_key", targetGroup),
-			zap.String("error", err.Error()),
-		)
-	}
+	s.conn.Close()
+	s.conn = nil
 
-	return entries, nil
+	return entries, s.updateCache(targetGroup, entries, time.Duration(s.Config.CacheTTL)*time.Second)
 
 }
 
+// Serialize returns the json representation of the discovered target groups
 func (s *LdapStore) Serialize(targetGroup string) (string, error) {
 
-	res, _ := s.RunDiscovery(targetGroup)
+	res, err := s.runDiscovery(targetGroup)
+	if err != nil {
+		return "", err
+	}
 
 	tgList := []TargetGroup{}
 
@@ -278,6 +357,15 @@ func (s *LdapStore) Serialize(targetGroup string) (string, error) {
 
 }
 
+// IsReady exposes if the discovery server is ready or not
+func (s *LdapStore) IsReady() bool {
+	return s.isReady
+}
+
+// Shutdown handles the shutdown procedure of the discovery server.
 func (s *LdapStore) Shutdown() {
-	s.conn.Close()
+	if s.conn != nil {
+		s.conn.Close()
+		s.conn = nil
+	}
 }
