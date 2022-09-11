@@ -50,6 +50,16 @@ A sample configuration can be found in the `_samples/` directory.
     * Return the current config which has been used to start the exporter
 
 
+## Reference of ActiveDirectory and LDAP attributes
+
+You can find a list of ActiveDirectory attributes here:
+https://docs.microsoft.com/en-us/windows/win32/adschema/attributes-all
+
+And the list of LDAP attributes:
+http://www.phpldaptools.com/reference/Default-Schema-Attributes/#ad-computer-types
+
+
+
 ## Building
 
 ### 1. Checkout required code version
