@@ -17,9 +17,13 @@ func init() {
 	atom := zap.NewAtomicLevel()
 	atom.SetLevel(zap.InfoLevel)
 
-	// To keep the example deterministic, disable timestamps in the output.
 	encoderCfg := zap.NewProductionEncoderConfig()
-	encoderCfg.TimeKey = ""
+	//encoderCfg.TimeKey = "@timestamp"
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	// To keep the example deterministic, disable timestamps in the output.
+	// encoderCfg := zap.NewProductionEncoderConfig()
+	// encoderCfg.TimeKey = ""
 
 	logger := zap.New(zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderCfg),
