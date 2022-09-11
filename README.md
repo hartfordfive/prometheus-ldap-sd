@@ -29,6 +29,10 @@ Running the server:
 `ldap_config.unsecured`: Allow unsecured connections
 `ldap_config.bind_dn`: The bind DN to use for the authentication user
 `ldap_config.base_dn_mappings`: A map of base DNs in the format of <GROUP_NAME> -> <BASE_DN_LIST>
+`ldap_config.base_dn_mappings.[X].base_dn_list` : List of 
+`ldap_config.base_dn_mappings.[X].exporter_port` : The port on which the prometheux exporter is exposing metrics on the discovered host
+`ldap_config.base_dn_mappings.[X].attributes` : The attributes to include for the list of labels exposed for the list of discovered targets
+`ldap_config.base_dn_mappings.[X].filter` : The filter to be used to limit the list of discovered targets.  Specifying this one will ignore the top level `ldap_config.filter` option.
 `ldap_config.group_exporter_port_mapping`: A mapping of exporter port to include for each <GROUP_NAME>
 `ldap_config.filter`: The filter to use when querying AD.  Note: This generally shouldn't be modified.
 `ldap_config.attributes`: The list of attributes to fetch from each LDAP object.  
@@ -44,10 +48,12 @@ A sample configuration can be found in the `_samples/` directory.
     * Return the list of targets (formated in expected HTTP SD format)
 * **GET /metrics**
     * Return the list of prometheus metrics for the exporter
-* **GET /health**
+* **GET /healthz**
     *  Return the current health status of the exporter
 * **GET /config**
     * Return the current config which has been used to start the exporter
+* **GET /debug/profile**
+    * Generate a debugging profile.  See [here](https://go.dev/blog/pprof) for more details.
 
 
 ## Reference of ActiveDirectory and LDAP attributes
