@@ -252,7 +252,6 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 	var attributesList []string
 	var filter string = ldapFilter
 	var resultsErr error
-	//var ldapConn *ldap.Conn
 
 	if strings.TrimSpace(targetGroup) == "" {
 		return entries, &LdapStoreErrorInvalidTargetGroup{}
