@@ -345,6 +345,10 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 // Serialize returns the json representation of the discovered target groups
 func (s *LdapStore) Serialize(targetGroup string) (string, error) {
 
+	if _, ok := s.Config.BaseDnMappings[targetGroup]; !ok {
+		return "", &LdapStoreErrorInvalidTargetGroup{targetGroup}
+	}
+
 	res, err := s.runDiscovery(targetGroup)
 	if err != nil {
 		return "", err

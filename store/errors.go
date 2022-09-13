@@ -1,10 +1,14 @@
 package store
 
+import "fmt"
+
 // LdapStoreErrorInvalidTargetGroup is an error relating to an invalid target group name
-type LdapStoreErrorInvalidTargetGroup struct{}
+type LdapStoreErrorInvalidTargetGroup struct {
+	TargetGroup string
+}
 
 func (e *LdapStoreErrorInvalidTargetGroup) Error() string {
-	return "Invalid or empty target group specified"
+	return fmt.Sprintf("Invalid or empty target group specified: %s", e.TargetGroup)
 }
 
 // LdapStoreErrorInvalidQuery is an error relating to an invalide LDAP query

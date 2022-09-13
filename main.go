@@ -178,11 +178,13 @@ func main() {
 		targetGroup := req.URL.Query().Get("targetGroup")
 		res, err := store.StoreInstance.Serialize(targetGroup)
 		if err != nil {
-			if err == err.(*store.LdapStoreErrorMaxReconnects) {
-				logger.Logger.Error(err.Error())
+			logger.Logger.Error(err.Error())
+			switch err.(type) {
+			case *store.LdapStoreErrorMaxReconnects:
 				interruptChan <- syscall.SIGTERM
 				return
 			}
+
 			http.Error(w, "[]", http.StatusInternalServerError)
 			return
 		}
