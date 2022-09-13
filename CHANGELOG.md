@@ -1,5 +1,12 @@
 # Changelog
 
+### v0.4.0
+- Moved the reconnection logic to a `reconnect`
+- Added locks for both LDAP connection attempts and cache updates.   The LDAP store is a global struct being initialized in the main goroutine, thus there could be concurrent attempts being made by different incoming requests.
+- Added proper comments to custom errors
+- Renamed `ldap_sd_req_from_cache_total` metric to `ldap_sd_cache_hit_total`
+- Updated error checking in `/targets` handler function
+- Added logic to ensure an existing targetGroup is specified.
 
 ### v0.3.0
 - Exposed new prometheus metrics including: `ldap_sd_build_info`, `ldap_sd_req_failed_total`, `ldap_sd_req_success_total`, `ldap_sd_req_from_cache_total`, `ldap_sd_cache_update_success_total`, `ldap_sd_cache_update_fail_total`, `ldap_sd_reconnect`
