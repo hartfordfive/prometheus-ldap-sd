@@ -4,6 +4,7 @@
 - Moved the reconnection logic to a `reconnect`
 - Added locks for both LDAP connection attempts and cache updates.   The LDAP store is a global struct being initialized in the main goroutine, thus there could be concurrent attempts being made by different incoming requests.
 - Added proper comments to custom errors
+- Removed the `s.conn.Close()` function call from the `runDiscovery` function so that the connection can remain active.  Disconnections are automatically dealt with by the `reconnect` function.
 - Renamed `ldap_sd_req_from_cache_total` metric to `ldap_sd_cache_hit_total`
 - Updated error checking in `/targets` handler function
 - Added logic to ensure an existing targetGroup is specified.
