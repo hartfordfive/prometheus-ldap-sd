@@ -1,12 +1,10 @@
 package store
 
-/*
-	RESULT_INVALID_QUERY
-	RESULT_MAX_RECONNECTS
-	RESULT_CACHE_ERROR
-	RESULT_CACHE_UPDATE_FAIL
-	RESULT_CACHE_FETCH_FAIL
-*/
+type LdapStoreErrorInvalidTargetGroup struct{}
+
+func (e *LdapStoreErrorInvalidTargetGroup) Error() string {
+	return "Invalid or empty target group specified"
+}
 
 type LdapStoreErrorInvalidQuery struct{}
 
