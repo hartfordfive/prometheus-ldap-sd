@@ -20,6 +20,10 @@ parser.add_option("-H", "--host",
                   dest = "host",
                   default = "127.0.0.1",
                   help = "Server host address")
+parser.add_option("-p", "--port",
+                  dest = "port",
+                  default = "80",
+                  help = "Server port")
 parser.add_option("-c", "--config",
                   dest = "config",
                   default = "./prometheus-ldap-sd.yaml",
@@ -47,7 +51,7 @@ with open(options.config, "r") as stream:
 while True:
   print(f"--------------------- Scraping {len(conf['ldap_config']['base_dn_mappings'])} target groups -------------------")
   for k,v in conf['ldap_config']['base_dn_mappings'].items():
-    url = f"http://{options.host}:{conf['server_port']}/targets?targetGroup={k}"
+    url = f"http://{options.host}:{options.port}/targets?targetGroup={k}"
     logging.info(f"Fetching targets for group {k}")
     res = requests.get(url)
     logging.info(f"\tURL: {url} (Total size: {len(res.content)})")

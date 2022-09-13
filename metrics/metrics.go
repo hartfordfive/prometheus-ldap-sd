@@ -30,7 +30,7 @@ var (
 	)
 	MetricRequestsFromCache = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "ldap_sd_req_from_cache_total",
+			Name: "ldap_sd_cache_hit_total",
 			Help: "Number of requests served directly from local cache",
 		},
 		[]string{"group_name"},

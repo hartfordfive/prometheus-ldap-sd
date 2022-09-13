@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gadelkareem/cachita"
@@ -35,6 +36,8 @@ type LdapStore struct {
 	conn              *ldap.Conn
 	cache             cachita.Cache
 	ReconnectAttempts int
+	connLock          sync.Mutex
+	cacheLock         sync.Mutex
 	isReady           bool
 }
 
@@ -128,9 +131,45 @@ func getLdapConn(ldapURL, bindDN string, authenticated bool, passEnvVar string, 
 	return l, nil
 }
 
+func (s *LdapStore) reconnect() error {
+	// Attempt to reconnect if the connection is no longer valid
+	s.connLock.Lock()
+	defer s.connLock.Unlock()
+
+	for s.ReconnectAttempts < maxReconnectAttempts {
+		s.ReconnectAttempts++
+		metrics.MetricReconnect.Inc()
+		ldapConn, err := getLdapConn(s.Config.URL, s.Config.BindDN, s.Config.Authenticated, s.Config.PasswordEnvVar, s.Config.Unsecured)
+		if err != nil {
+			logger.Logger.Warn("Reconnection attempt fialed",
+				zap.Int("attempt", s.ReconnectAttempts),
+				zap.String("error", err.Error()),
+			)
+			if s.ReconnectAttempts >= maxReconnectAttempts {
+				s.isReady = false
+				break
+			}
+
+			time.Sleep(5 * time.Second)
+			continue
+		} else {
+			logger.Logger.Debug("LDAP connection re-established")
+			s.conn = ldapConn
+			return nil
+		}
+	}
+	return &LdapStoreErrorMaxReconnects{}
+}
+
 func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesList []string) ([]LdapObject, error) {
 	var entries []LdapObject
 	var obj LdapObject
+
+	if _, err := s.conn.Search(&ldap.SearchRequest{}); err == ldap.ErrNilConnection {
+		if err := s.reconnect(); err != nil {
+			return entries, err
+		}
+	}
 
 	search := ldap.NewSearchRequest(
 		baseDn,
@@ -143,9 +182,10 @@ func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesLis
 		attributesList,
 		[]ldap.Control{})
 
-	logger.Logger.Debug("Runing SearchWithPaging",
+	logger.Logger.Debug("Running SearchWithPaging",
 		zap.String("base_dn", baseDn),
-		zap.String("filter", filter))
+		zap.String("filter", filter),
+		zap.Any("attributesList", attributesList))
 
 	results, err := s.conn.SearchWithPaging(search, searchPagingSize)
 
@@ -190,6 +230,9 @@ func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesLis
 }
 
 func (s *LdapStore) updateCache(targetGroup string, entries []LdapObject, ttl time.Duration) error {
+	s.cacheLock.Lock()
+	defer s.cacheLock.Unlock()
+
 	err := s.cache.Put(targetGroup, entries, ttl)
 	if err != nil {
 		logger.Logger.Error("Could not store result set in cache",
@@ -209,7 +252,10 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 	var attributesList []string
 	var filter string = ldapFilter
 	var resultsErr error
-	var ldapConn *ldap.Conn
+
+	if strings.TrimSpace(targetGroup) == "" {
+		return entries, &LdapStoreErrorInvalidTargetGroup{}
+	}
 
 	// Fetch objects from cache if they are present and still valid
 	err := s.cache.Get(targetGroup, &entries)
@@ -230,30 +276,10 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		return entries, nil
 	}
 
-	if s.conn == nil {
-		// In this case, the results aren't in cache or have expiered, so we need to connect to the remote LDAP
-		// server to fetch them
-		for s.ReconnectAttempts < maxReconnectAttempts {
-			s.ReconnectAttempts++
-			ldapConn, err = getLdapConn(s.Config.URL, s.Config.BindDN, s.Config.Authenticated, s.Config.PasswordEnvVar, s.Config.Unsecured)
-			if err != nil {
-				logger.Logger.Warn("Connection attempt fialed",
-					zap.Int("attempt", s.ReconnectAttempts),
-					zap.String("error", err.Error()),
-				)
-				if s.ReconnectAttempts >= maxReconnectAttempts {
-					s.isReady = false
-					return entries, &LdapStoreErrorMaxReconnects{}
-				}
-
-				time.Sleep(5 * time.Second)
-				continue
-			} else {
-				s.conn = ldapConn
-				break
-			}
+	if _, err := s.conn.Search(&ldap.SearchRequest{}); err == ldap.ErrNilConnection {
+		if err := s.reconnect(); err != nil {
+			return entries, err
 		}
-
 	}
 
 	select {
@@ -263,6 +289,8 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 
 		baseDnMapping := s.Config.BaseDnMappings[targetGroup]
 		attributesList = append(s.Config.DefaultAttributes, baseAttributes...)
+
+		logger.Logger.Debug("Base DN mapping", zap.Any("base_dn_mapping", baseDnMapping))
 
 		if len(baseDnMapping.Attributes) >= 1 {
 			for _, attrib := range baseDnMapping.Attributes {
@@ -310,15 +338,16 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 
 	}
 
-	s.conn.Close()
-	s.conn = nil
-
 	return entries, s.updateCache(targetGroup, entries, time.Duration(s.Config.CacheTTL)*time.Second)
 
 }
 
 // Serialize returns the json representation of the discovered target groups
 func (s *LdapStore) Serialize(targetGroup string) (string, error) {
+
+	if _, ok := s.Config.BaseDnMappings[targetGroup]; !ok {
+		return "", &LdapStoreErrorInvalidTargetGroup{targetGroup}
+	}
 
 	res, err := s.runDiscovery(targetGroup)
 	if err != nil {

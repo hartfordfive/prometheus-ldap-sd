@@ -130,10 +130,9 @@ func main() {
 
 	config.GlobalConfig = conf
 
-	logger.Logger.Info(fmt.Sprintf("Cache TTL set to %ds", conf.LdapConfig.CacheTTL))
+	logger.Logger.Debug(fmt.Sprintf("Cache TTL set to %ds", conf.LdapConfig.CacheTTL))
 
 	// Init datastore
-	logger.Logger.Sugar().Infof("Starting LDAP datastore")
 	store.StoreInstance, err = store.NewLdapStore(
 		conf.LdapConfig.URL,
 		conf.LdapConfig.BindDN,
@@ -160,8 +159,6 @@ func main() {
 		metrics.MetricReconnect.Add(0)
 	}
 
-	// Init web server
-
 	listenAddr := fmt.Sprintf("%s:%d", conf.Host, conf.Port)
 
 	r := mux.NewRouter()
@@ -179,15 +176,16 @@ func main() {
 		logger.Logger.Debug("Target listing requested", zap.String("remote_addr", req.RemoteAddr))
 		w.Header().Set("Content-Type", "application/json")
 		targetGroup := req.URL.Query().Get("targetGroup")
-		dataStore := store.StoreInstance
-		res, err := dataStore.Serialize(targetGroup)
+		res, err := store.StoreInstance.Serialize(targetGroup)
 		if err != nil {
-			if err == err.(*store.LdapStoreErrorMaxReconnects) {
-				logger.Logger.Error(err.Error())
+			logger.Logger.Error(err.Error())
+			switch err.(type) {
+			case *store.LdapStoreErrorMaxReconnects:
 				interruptChan <- syscall.SIGTERM
 				return
 			}
-			fmt.Fprint(w, "[]\n")
+
+			http.Error(w, "[]", http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprintf(w, "%s\n", res)
