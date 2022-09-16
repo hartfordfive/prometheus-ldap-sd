@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	defaultLogger "log"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-ldap/ldap/v3"
 	"github.com/gorilla/mux"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/config"
 	"github.com/hartfordfive/prometheus-ldap-sd-server/logger"
@@ -149,7 +151,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	metrics.MetricBuildInfo.WithLabelValues(version.Version).Inc()
+	// The ldap package Logger function can't use the zap.Logger struct, so we have to create a seperate one
+	ldap.Logger(defaultLogger.New(os.Stdout, "", defaultLogger.LstdFlags))
+
+	metrics.MetricBuildInfo.WithLabelValues(version.Version, version.CommitHash).Inc()
+
 	for targetGroup, _ := range conf.LdapConfig.BaseDnMappings {
 		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup)
 		metrics.MetricServerRequests.WithLabelValues(targetGroup)
@@ -174,21 +180,25 @@ func main() {
 
 	r.HandleFunc("/targets", func(w http.ResponseWriter, req *http.Request) {
 		logger.Logger.Debug("Target listing requested", zap.String("remote_addr", req.RemoteAddr))
+
 		w.Header().Set("Content-Type", "application/json")
 		targetGroup := req.URL.Query().Get("targetGroup")
 		res, err := store.StoreInstance.Serialize(targetGroup)
+
 		if err != nil {
 			logger.Logger.Error(err.Error())
-			switch err.(type) {
-			case *store.LdapStoreErrorMaxReconnects:
-				interruptChan <- syscall.SIGTERM
-				return
+			storeError, isStoreErr := err.(*store.Error)
+			if isStoreErr {
+				if storeError.Code == store.LdapStoreErrorMaxReconnects {
+					interruptChan <- syscall.SIGTERM
+					return
+				}
 			}
-
 			http.Error(w, "[]", http.StatusInternalServerError)
 			return
 		}
 		fmt.Fprintf(w, "%s\n", res)
+
 	}).Methods("GET")
 
 	r.HandleFunc("/config", func(w http.ResponseWriter, req *http.Request) {

@@ -12,7 +12,7 @@ var (
 			Name: "ldap_sd_build_info",
 			Help: "Build information prometheus-ldap-sd ",
 		},
-		[]string{"version"},
+		[]string{"version", "git_hash"},
 	)
 	MetricServerRequests = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -51,7 +51,7 @@ var (
 	)
 	MetricReconnect = prometheus.NewCounter(
 		prometheus.CounterOpts{
-			Name: "ldap_sd_reconnect_total",
+			Name: "ldap_sd_connect_total",
 			Help: "Number of times the connection to remote LDAP server was re-connected.",
 		},
 	)
@@ -71,6 +71,6 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-func InitCounter(metric *prometheus.CounterVec, targetGroup string) {
-	metric.WithLabelValues(targetGroup)
-}
+// func InitCounter(metric *prometheus.CounterVec, targetGroup string) {
+// 	metric.WithLabelValues(targetGroup)
+// }
