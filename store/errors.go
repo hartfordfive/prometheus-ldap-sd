@@ -2,46 +2,47 @@ package store
 
 import "fmt"
 
-// LdapStoreErrorInvalidTargetGroup is an error relating to an invalid target group name
-type LdapStoreErrorInvalidTargetGroup struct {
-	TargetGroup string
+// LdapStore error codes
+const (
+	LdapStoreError                   = 0
+	LdapStoreErrorInvalidTargetGroup = 1
+	LdapStoreErrorInvalidQuery       = 2
+	LdapStoreErrorMaxReconnects      = 3
+	LdapStoreErrorCache              = 4
+	LdapStoreErrorCacheUpdate        = 5
+	LdapStoreErrorCacheFetch         = 6
+)
+
+// LDAPStoreErrorCodeMap contains string descriptions for LDAP error codes
+var LDAPStoreErrorCodeMap = map[uint16]string{
+	LdapStoreError:                   "Undefined store error",
+	LdapStoreErrorInvalidTargetGroup: "Invalid or empty target group specified",
+	LdapStoreErrorInvalidQuery:       "Invalid LDAP query",
+	LdapStoreErrorMaxReconnects:      "Maximum reconnection attempts reached",
+	LdapStoreErrorCache:              "A general cache error was encountered",
+	LdapStoreErrorCacheUpdate:        "The cache update operation failed",
+	LdapStoreErrorCacheFetch:         "The cache fetch operation failed",
 }
 
-func (e *LdapStoreErrorInvalidTargetGroup) Error() string {
-	return fmt.Sprintf("Invalid or empty target group specified: %s", e.TargetGroup)
+// Error holds LdapStore error information
+type Error struct {
+	Properties map[string]string
+	Code       uint16
 }
 
-// LdapStoreErrorInvalidQuery is an error relating to an invalide LDAP query
-type LdapStoreErrorInvalidQuery struct{}
-
-func (e *LdapStoreErrorInvalidQuery) Error() string {
-	return "Invalid LDAP query"
-}
-
-// LdapStoreErrorMaxReconnects is an error relating to hitting the maximum reconneciton attempts
-type LdapStoreErrorMaxReconnects struct{}
-
-func (e *LdapStoreErrorMaxReconnects) Error() string {
-	return "Maximum reconnection attempts reached"
-}
-
-// LdapStoreErrorCache is an error relating to a general caching error
-type LdapStoreErrorCache struct{}
-
-func (e *LdapStoreErrorCache) Error() string {
-	return "A general cache error was encountered"
-}
-
-// LdapStoreErrorCacheUpdate is an error relating to an error updating the local cache
-type LdapStoreErrorCacheUpdate struct{}
-
-func (e *LdapStoreErrorCacheUpdate) Error() string {
-	return "The cache update operation failed"
-}
-
-// LdapStoreErrorCacheFetch is an error relating to fetching an item from cache
-type LdapStoreErrorCacheFetch struct{}
-
-func (e *LdapStoreErrorCacheFetch) Error() string {
-	return "The cache fetch operation failed"
+func (e *Error) Error() string {
+	err := fmt.Sprintf("LdapStore result code %d: %q", e.Code, LDAPStoreErrorCodeMap[e.Code])
+	if len(e.Properties) >= 1 {
+		err += " ("
+		propIndex := 0
+		for k, v := range e.Properties {
+			err += fmt.Sprintf("%s=%s", k, v)
+			if len(e.Properties) >= 2 && propIndex < len(e.Properties)-2 {
+				err += ", "
+			}
+			propIndex++
+		}
+		err += ")"
+	}
+	return err
 }
