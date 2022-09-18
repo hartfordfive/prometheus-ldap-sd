@@ -103,73 +103,78 @@ func NewLdapStore(
 
 }
 
-func getLdapConn(ldapURL, bindDN string, authenticated bool, passEnvVar string, unsecured bool) (*ldap.Conn, error) {
-	logger.Logger.Debug("Dialing LDAP host", zap.String("host", ldapURL))
-	l, err := ldap.DialURL(fmt.Sprintf("ldap://%s", ldapURL))
-	if err != nil {
-		return nil, fmt.Errorf("error connecting to %v", err)
-	}
-	l.SetTimeout(5 * time.Second)
-	if unsecured {
-		err = l.StartTLS(&tls.Config{InsecureSkipVerify: true})
-		if err != nil {
-			return nil, fmt.Errorf("error upgrading connection to TLS: %v", err)
-		}
-	}
-	if !authenticated {
-		err = l.UnauthenticatedBind(bindDN)
-		if err != nil {
-			return nil, fmt.Errorf("error performing unauthenticated bind: %v", err)
-		}
-	} else {
-		err = l.Bind(bindDN, os.Getenv(passEnvVar))
-		if err != nil {
-			return nil, fmt.Errorf("error performing authenticated bind: %v", err)
-		}
-	}
 
-	return l, nil
-}
+func (s *LdapStore) connect() error {
 
-func (s *LdapStore) reconnect() error {
-	// Attempt to reconnect if the connection is no longer valid
 	s.connLock.Lock()
 	defer s.connLock.Unlock()
 
-	for s.ReconnectAttempts < maxReconnectAttempts {
-		s.ReconnectAttempts++
-		metrics.MetricReconnect.Inc()
-		ldapConn, err := getLdapConn(s.Config.URL, s.Config.BindDN, s.Config.Authenticated, s.Config.PasswordEnvVar, s.Config.Unsecured)
-		if err != nil {
-			logger.Logger.Warn("Reconnection attempt fialed",
-				zap.Int("attempt", s.ReconnectAttempts),
-				zap.String("error", err.Error()),
-			)
-			if s.ReconnectAttempts >= maxReconnectAttempts {
-				s.isReady = false
-				break
+	if s.conn == nil || s.conn.IsClosing() {
+
+	Retry:
+		for s.ReconnectAttempts < maxReconnectAttempts {
+
+			s.ReconnectAttempts++
+			metrics.MetricReconnect.Inc()
+
+			logger.Logger.Debug("Connection has not been initiated or was recently closed.  Attempting to connect.")
+
+			// if ldap.IsErrorWithCode(connErr, ldap.ErrorNetwork) {
+			// }
+
+			logger.Logger.Debug("Dialing LDAP host", zap.String("host", s.Config.URL))
+			l, err := ldap.DialURL(fmt.Sprintf("ldap://%s", s.Config.URL))
+			if err != nil {
+				return fmt.Errorf("Could not connect to %v", err)
+			}
+			l.SetTimeout(5 * time.Second)
+			if s.Config.Unsecured {
+				err = l.StartTLS(&tls.Config{InsecureSkipVerify: true})
+				if err != nil {
+					return fmt.Errorf("Could not upgrade connection to TLS: %v", err)
+				}
+			}
+			if !s.Config.Authenticated {
+				err = l.UnauthenticatedBind(s.Config.BindDN)
+				if err != nil {
+					if ldap.IsErrorWithCode(err, ldap.ErrorNetwork) ||
+						ldap.IsErrorWithCode(err, ldap.LDAPResultServerDown) ||
+						ldap.IsErrorWithCode(err, ldap.LDAPResultConnectError) {
+						goto Retry
+					}
+					return fmt.Errorf("Could not perform unauthenticated bind: %v", err)
+				}
+			} else {
+				err = l.Bind(s.Config.BindDN, os.Getenv(s.Config.PasswordEnvVar))
+				if err != nil {
+					if ldap.IsErrorWithCode(err, ldap.ErrorNetwork) ||
+						ldap.IsErrorWithCode(err, ldap.LDAPResultServerDown) ||
+						ldap.IsErrorWithCode(err, ldap.LDAPResultConnectError) {
+						goto Retry
+					}
+					return fmt.Errorf("Could not perform authenticated bind: %v", err)
+
+				}
 			}
 
-			time.Sleep(5 * time.Second)
-			continue
-		} else {
-			logger.Logger.Debug("LDAP connection re-established")
-			s.conn = ldapConn
-			return nil
+			logger.Logger.Debug("Connection restablished")
+			s.conn = l
+			s.ReconnectAttempts = 0
+			break
 		}
-	}
-	return &LdapStoreErrorMaxReconnects{}
+
+		if s.ReconnectAttempts >= maxReconnectAttempts {
+			return &Error{Code: LdapStoreErrorMaxReconnects}
+		}
+
+	} // end of isClosing()
+
+	return nil
 }
 
 func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesList []string) ([]LdapObject, error) {
 	var entries []LdapObject
 	var obj LdapObject
-
-	if _, err := s.conn.Search(&ldap.SearchRequest{}); err == ldap.ErrNilConnection {
-		if err := s.reconnect(); err != nil {
-			return entries, err
-		}
-	}
 
 	search := ldap.NewSearchRequest(
 		baseDn,
@@ -187,15 +192,15 @@ func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesLis
 		zap.String("filter", filter),
 		zap.Any("attributesList", attributesList))
 
-	results, err := s.conn.SearchWithPaging(search, searchPagingSize)
+	results, connErr := s.conn.SearchWithPaging(search, searchPagingSize)
 
-	if err != nil {
+	if connErr != nil {
 		logger.Logger.Error("Could not run search against LDAP",
 			zap.String("base_dn", baseDn),
-			zap.String("error", err.Error()),
+			zap.String("error", connErr.Error()),
 		)
 		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup).Inc()
-		return []LdapObject{}, err
+		return []LdapObject{}, connErr
 	}
 
 	logger.Logger.Debug("Building results from discovered objects",
@@ -206,7 +211,10 @@ func (s *LdapStore) getResults(targetGroup, baseDn, filter string, attributesLis
 	obj = LdapObject{}
 	for _, e := range results.Entries {
 		if e.GetAttributeValue("dNSHostName") == "" {
-			logger.Logger.Warn("Skipping object as it's missing the dNSHostName attribute", zap.Any("name", e.GetAttributeValue("name")))
+			logger.Logger.Warn("Skipping object as it's missing the dNSHostName attribute",
+				zap.String("target_group", targetGroup),
+				zap.String("base_dn", baseDn),
+				zap.Any("name", e.GetAttributeValue("name")))
 			continue
 		}
 		obj = LdapObject{
@@ -240,7 +248,7 @@ func (s *LdapStore) updateCache(targetGroup string, entries []LdapObject, ttl ti
 			zap.String("error", err.Error()),
 		)
 		metrics.MetricCacheUpdateFail.WithLabelValues(targetGroup).Inc()
-		return &LdapStoreErrorCacheUpdate{}
+		return &Error{Code: LdapStoreErrorCacheUpdate}
 	} else {
 		metrics.MetricCacheUpdateSuccess.WithLabelValues(targetGroup).Inc()
 	}
@@ -254,7 +262,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 	var resultsErr error
 
 	if strings.TrimSpace(targetGroup) == "" {
-		return entries, &LdapStoreErrorInvalidTargetGroup{}
+		return entries, &Error{Code: LdapStoreErrorInvalidTargetGroup}
 	}
 
 	// Fetch objects from cache if they are present and still valid
@@ -263,7 +271,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		logger.Logger.Error("Could not fetch existing cached target group entries from cache",
 			zap.Any("error", err.Error()),
 		)
-		return entries, &LdapStoreErrorCacheFetch{}
+		return entries, &Error{Code: LdapStoreErrorCacheFetch}
 	} else if err == cachita.ErrExpired {
 		logger.Logger.Debug("Target group cache entries expired. Fetching updated list.",
 			zap.String("cache_key", targetGroup),
@@ -276,10 +284,12 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		return entries, nil
 	}
 
-	if _, err := s.conn.Search(&ldap.SearchRequest{}); err == ldap.ErrNilConnection {
-		if err := s.reconnect(); err != nil {
-			return entries, err
-		}
+	if err := s.connect(); err != nil {
+		logger.Logger.Error("LDAP connection attempts failed",
+			zap.String("error", err.Error()),
+		)
+		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup).Inc()
+		return entries, err
 	}
 
 	select {
@@ -299,15 +309,15 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		}
 
 		if baseDnMapping == nil {
-			return entries, &LdapStoreErrorInvalidQuery{}
+			return entries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
 		}
 		if len(baseDnMapping.BaseDnList) == 0 && baseDnMapping.Filter == "" {
 			logger.Logger.Error("Could not store result set in cache")
-			return entries, &LdapStoreErrorCacheUpdate{}
+			return entries, &Error{Code: LdapStoreErrorCacheUpdate} //&LdapStoreErrorCacheUpdate{}
 		}
 
 		if baseDnMapping.Filter == "(&(objectClass=computer))" || (baseDnMapping.Filter == "" && len(baseDnMapping.BaseDnList) == 0) {
-			return entries, &LdapStoreErrorInvalidQuery{}
+			return entries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
 		}
 
 		if baseDnMapping.Filter != "" {
@@ -346,7 +356,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 func (s *LdapStore) Serialize(targetGroup string) (string, error) {
 
 	if _, ok := s.Config.BaseDnMappings[targetGroup]; !ok {
-		return "", &LdapStoreErrorInvalidTargetGroup{targetGroup}
+		return "", &Error{Code: LdapStoreErrorInvalidQuery, Properties: map[string]string{"target_group": targetGroup}} //&LdapStoreErrorInvalidTargetGroup{targetGroup}
 	}
 
 	res, err := s.runDiscovery(targetGroup)

@@ -1,5 +1,11 @@
 # Changelog
 
+### v0.4.1-alpha
+- Updated `ldap_sd_build_info` metrics to include git hash via the `git_hash` label
+- Updated connection and reconnection logic to use a single `connect()` function which uses a connection lock to ensure the operation is thread-safe.
+- Improved structure of custom errors and added basic tests for them.
+- Added the relevant target group and base DN to warning logs regarding an object missing the `dNSHostName` attribute.
+
 ### v0.4.0
 - Moved the reconnection logic to a `reconnect`
 - Added locks for both LDAP connection attempts and cache updates.   The LDAP store is a global struct being initialized in the main goroutine, thus there could be concurrent attempts being made by different incoming requests.
