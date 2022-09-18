@@ -60,7 +60,7 @@ build-docker:
 	docker build -t prom-http-sd-server:$(VERSION) --build-arg VERSION=$(VERSION) -f Dockerfile .
 
 test: 
-	$(GOTEST) -v ./...
+	$(GOTEST) `go list ./... | grep -v /vendor/`
 
 clean: 
 	$(GOCLEAN)

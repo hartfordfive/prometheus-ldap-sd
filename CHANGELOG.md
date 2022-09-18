@@ -1,5 +1,12 @@
 # Changelog
 
+### v0.4.1
+- Updated `ldap_sd_build_info` metrics to include git hash via the `git_hash` label
+- Updated connection and reconnection logic to use a single `connect()` function which uses a connection lock to ensure the operation is thread-safe.
+- Improved structure of custom errors and added basic tests for them.
+- Added the relevant target group and base DN to warning logs regarding an object missing the `dNSHostName` attribute.
+- Updated `test` stage in make file.
+
 ### v0.4.1-alpha
 - Updated `ldap_sd_build_info` metrics to include git hash via the `git_hash` label
 - Updated connection and reconnection logic to use a single `connect()` function which uses a connection lock to ensure the operation is thread-safe.
