@@ -22,23 +22,23 @@ Running the server:
 
 ## Configuration Options
 
-`host` : The host on which to listen (default is 127.0.0.1)
-`port`: The port on which to listen (default is 80)
-`ldap_config.server`:  The address of the LDAP/ActiveDirectory server
-`ldap_config.authenticated`: Enable connecting with authentication
-`ldap_config.unsecured`: Allow unsecured connections
-`ldap_config.bind_dn`: The bind DN to use for the authentication user
-`ldap_config.base_dn_mappings`: A map of base DNs in the format of <GROUP_NAME> -> <BASE_DN_LIST>
-`ldap_config.base_dn_mappings.[X].base_dn_list` : List of 
-`ldap_config.base_dn_mappings.[X].exporter_port` : The port on which the prometheux exporter is exposing metrics on the discovered host
-`ldap_config.base_dn_mappings.[X].attributes` : The attributes to include for the list of labels exposed for the list of discovered targets
-`ldap_config.base_dn_mappings.[X].filter` : The filter to be used to limit the list of discovered targets.  Specifying this one will ignore the top level `ldap_config.filter` option.
-`ldap_config.group_exporter_port_mapping`: A mapping of exporter port to include for each <GROUP_NAME>
-`ldap_config.filter`: The filter to use when querying AD.  Note: This generally shouldn't be modified.
-`ldap_config.attributes`: The list of attributes to fetch from each LDAP object.  
-`ldap_config.cache_dir`: The directory in which the cache is stroed.
-`ldap_config.cache_ttl`: The, ttl in seconds, of the cached results
-`ldap_config.password_env_var`: The environment variable in which the LDAP password is set.
+- `host` : The host on which to listen (default is 127.0.0.1)
+- `port`: The port on which to listen (default is 80)
+- `ldap_config.server`:  The address of the LDAP/ActiveDirectory server
+- `ldap_config.authenticated`: Enable connecting with authentication
+- `ldap_config.unsecured`: Allow unsecured connections
+- `ldap_config.bind_dn`: The bind DN to use for the authentication user
+- `ldap_config.base_dn_mappings`: A map of base DNs in the format of <GROUP_NAME> -> <BASE_DN_LIST>
+- `ldap_config.base_dn_mappings.[X].base_dn_list` : List of 
+- `ldap_config.base_dn_mappings.[X].exporter_port` : The port on which the prometheux exporter is exposing metrics on the discovered host
+- `ldap_config.base_dn_mappings.[X].attributes` : The attributes to include for the list of labels exposed for the list of discovered targets
+- `ldap_config.base_dn_mappings.[X].filter` : The filter to be used to limit the list of discovered targets.  Specifying this one will ignore the top level - `ldap_config.filter` option.
+- `ldap_config.group_exporter_port_mapping`: A mapping of exporter port to include for each <GROUP_NAME>
+- `ldap_config.filter`: The filter to use when querying AD.  Note: This generally shouldn't be modified.
+- `ldap_config.attributes`: The list of attributes to fetch from each LDAP object.  
+- `ldap_config.cache_dir`: The directory in which the cache is stroed.
+- `ldap_config.cache_ttl`: The, ttl in seconds, of the cached results
+- `ldap_config.password_env_var`: The environment variable in which the LDAP password is set.
 
 A sample configuration can be found in the `_samples/` directory. 
 
