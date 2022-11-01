@@ -1,5 +1,8 @@
 # Changelog
 
+### v0.4.2
+- [bugfix] Update the `runDiscovery` to properly append all resulting objects from each defined OU as it was previously overwriting the slice and consquently only returning the results of the last specified OU.
+
 ### v0.4.1
 - Updated `ldap_sd_build_info` metrics to include git hash via the `git_hash` label
 - Updated connection and reconnection logic to use a single `connect()` function which uses a connection lock to ensure the operation is thread-safe.
