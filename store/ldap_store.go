@@ -103,7 +103,6 @@ func NewLdapStore(
 
 }
 
-
 func (s *LdapStore) connect() error {
 
 	s.connLock.Lock()
@@ -256,22 +255,23 @@ func (s *LdapStore) updateCache(targetGroup string, entries []LdapObject, ttl ti
 }
 
 func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
-	var entries []LdapObject
+	var allEntries []LdapObject
+	var res []LdapObject
 	var attributesList []string
 	var filter string = ldapFilter
 	var resultsErr error
 
 	if strings.TrimSpace(targetGroup) == "" {
-		return entries, &Error{Code: LdapStoreErrorInvalidTargetGroup}
+		return allEntries, &Error{Code: LdapStoreErrorInvalidTargetGroup}
 	}
 
 	// Fetch objects from cache if they are present and still valid
-	err := s.cache.Get(targetGroup, &entries)
+	err := s.cache.Get(targetGroup, &allEntries)
 	if err != nil && err != cachita.ErrNotFound && err != cachita.ErrExpired {
 		logger.Logger.Error("Could not fetch existing cached target group entries from cache",
 			zap.Any("error", err.Error()),
 		)
-		return entries, &Error{Code: LdapStoreErrorCacheFetch}
+		return allEntries, &Error{Code: LdapStoreErrorCacheFetch}
 	} else if err == cachita.ErrExpired {
 		logger.Logger.Debug("Target group cache entries expired. Fetching updated list.",
 			zap.String("cache_key", targetGroup),
@@ -281,7 +281,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 			zap.String("cache_key", targetGroup),
 		)
 		metrics.MetricRequestsFromCache.WithLabelValues(targetGroup).Inc()
-		return entries, nil
+		return allEntries, nil
 	}
 
 	if err := s.connect(); err != nil {
@@ -289,7 +289,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 			zap.String("error", err.Error()),
 		)
 		metrics.MetricServerRequestsFailed.WithLabelValues(targetGroup).Inc()
-		return entries, err
+		return allEntries, err
 	}
 
 	select {
@@ -300,8 +300,6 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		baseDnMapping := s.Config.BaseDnMappings[targetGroup]
 		attributesList = append(s.Config.DefaultAttributes, baseAttributes...)
 
-		logger.Logger.Debug("Base DN mapping", zap.Any("base_dn_mapping", baseDnMapping))
-
 		if len(baseDnMapping.Attributes) >= 1 {
 			for _, attrib := range baseDnMapping.Attributes {
 				attributesList = append(attributesList, attrib)
@@ -309,15 +307,15 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		}
 
 		if baseDnMapping == nil {
-			return entries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
+			return allEntries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
 		}
 		if len(baseDnMapping.BaseDnList) == 0 && baseDnMapping.Filter == "" {
 			logger.Logger.Error("Could not store result set in cache")
-			return entries, &Error{Code: LdapStoreErrorCacheUpdate} //&LdapStoreErrorCacheUpdate{}
+			return allEntries, &Error{Code: LdapStoreErrorCacheUpdate} //&LdapStoreErrorCacheUpdate{}
 		}
 
 		if baseDnMapping.Filter == "(&(objectClass=computer))" || (baseDnMapping.Filter == "" && len(baseDnMapping.BaseDnList) == 0) {
-			return entries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
+			return allEntries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
 		}
 
 		if baseDnMapping.Filter != "" {
@@ -325,18 +323,20 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 		}
 
 		if baseDnMapping.Filter != "" && len(baseDnMapping.BaseDnList) == 0 {
-			entries, resultsErr = s.getResults(targetGroup, "", filter, attributesList)
+			res, resultsErr = s.getResults(targetGroup, "", filter, attributesList)
 			logger.Logger.Debug("Fetching LDAP objects corresponding to custom filter",
 				zap.String("targetGroup", targetGroup),
 				zap.String("filter", filter),
 			)
+			allEntries = append(allEntries, res...)
 		} else {
 			for _, baseDn := range baseDnMapping.BaseDnList {
 				logger.Logger.Debug("Fetching LDAP objects corresponding to base DN and filter",
 					zap.String("base_dn", baseDn),
 					zap.String("filter", filter),
 				)
-				entries, resultsErr = s.getResults(targetGroup, baseDn, filter, attributesList)
+				res, resultsErr = s.getResults(targetGroup, baseDn, filter, attributesList)
+				allEntries = append(allEntries, res...)
 			}
 		}
 
@@ -348,7 +348,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 
 	}
 
-	return entries, s.updateCache(targetGroup, entries, time.Duration(s.Config.CacheTTL)*time.Second)
+	return allEntries, s.updateCache(targetGroup, allEntries, time.Duration(s.Config.CacheTTL)*time.Second)
 
 }
 
