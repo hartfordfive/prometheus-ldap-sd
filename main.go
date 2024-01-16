@@ -57,6 +57,7 @@ func init() {
 	prometheus.Register(metrics.MetricCacheUpdateSuccess)
 	prometheus.Register(metrics.MetricCacheUpdateFail)
 	prometheus.Register(metrics.MetricReconnect)
+	prometheus.Register(metrics.MetricGroupNumObjects)
 
 	var log *zap.Logger
 	var loggerErr error
@@ -139,6 +140,7 @@ func main() {
 		conf.LdapConfig.URL,
 		conf.LdapConfig.BindDN,
 		conf.LdapConfig.BaseDnMappings,
+		conf.LdapConfig.Filter,
 		conf.LdapConfig.DefaultAttributes,
 		conf.LdapConfig.PasswordEnvVar,
 		conf.LdapConfig.Authenticated,
@@ -163,6 +165,7 @@ func main() {
 		metrics.MetricCacheUpdateSuccess.WithLabelValues(targetGroup)
 		metrics.MetricCacheUpdateFail.WithLabelValues(targetGroup)
 		metrics.MetricReconnect.Add(0)
+		metrics.MetricGroupNumObjects.WithLabelValues(targetGroup).Add(0)
 	}
 
 	listenAddr := fmt.Sprintf("%s:%d", conf.Host, conf.Port)
