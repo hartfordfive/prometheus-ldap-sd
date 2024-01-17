@@ -55,6 +55,13 @@ var (
 			Help: "Number of times the connection to remote LDAP server was re-connected.",
 		},
 	)
+	MetricGroupNumObjects = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "ldap_sd_target_group_num_objects",
+			Help: "Number of objects last discovered for the target group.",
+		},
+		[]string{"group_name"},
+	)
 )
 
 type responseWriter struct {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+- bugfix: Fixed problem with filters so that both the global filter and the target-group level filters are applied to searches.  Previously, if a global filter was set, the target-group filter was ignored.
+- feature: Added new `ldap_sd_target_group_num_objects` metric to track the number of targets found in each configured target group
+
 ### v0.4.2
 - [bugfix] Update the `runDiscovery` to properly append all resulting objects from each defined OU as it was previously overwriting the slice and consquently only returning the results of the last specified OU.
 

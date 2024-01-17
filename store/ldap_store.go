@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	ldapFilter           = "(&(objectClass=computer))"
+	defaultLdapFilter    = "(&(objectClass=computer))"
 	maxReconnectAttempts = 5
 )
 
@@ -70,6 +70,7 @@ func NewLdapStore(
 	url string,
 	bindDN string,
 	baseDnMappings map[string]*config.BaseDnMapping,
+	filter string,
 	defaultAttributes []string,
 	passEnvVar string,
 	authenticated bool,
@@ -89,6 +90,7 @@ func NewLdapStore(
 			URL:                  url,
 			BindDN:               bindDN,
 			BaseDnMappings:       baseDnMappings,
+			Filter:               filter,
 			DefaultAttributes:    defaultAttributes,
 			PasswordEnvVar:       passEnvVar,
 			Authenticated:        authenticated,
@@ -258,7 +260,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 	var allEntries []LdapObject
 	var res []LdapObject
 	var attributesList []string
-	var filter string = ldapFilter
+	var filter string
 	var resultsErr error
 
 	if strings.TrimSpace(targetGroup) == "" {
@@ -318,12 +320,22 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 			return allEntries, &Error{Code: LdapStoreErrorInvalidQuery} //&LdapStoreErrorInvalidQuery{}
 		}
 
-		if baseDnMapping.Filter != "" {
+		if s.Config.Filter != "" && baseDnMapping.Filter == "" {
+			filter = s.Config.Filter
+		} else if s.Config.Filter == "" && baseDnMapping.Filter != "" {
 			filter = baseDnMapping.Filter
+		} else if s.Config.Filter != "" && baseDnMapping.Filter != "" {
+			// If the top-level Filter property is set, we must combine it to any filters set at the host group level
+			filter = fmt.Sprintf("(&(%s)(%s))", s.Config.Filter, baseDnMapping.Filter)
+		} else {
+			// In this case, both  s.Config.Filter and baseDnMapping.Filter are empty, so use the default filter
+			filter = defaultLdapFilter
 		}
 
-		if baseDnMapping.Filter != "" && len(baseDnMapping.BaseDnList) == 0 {
+		if len(baseDnMapping.BaseDnList) == 0 {
 			res, resultsErr = s.getResults(targetGroup, "", filter, attributesList)
+
+			metrics.MetricGroupNumObjects.WithLabelValues(targetGroup).Set(float64(len(res)))
 			logger.Logger.Debug("Fetching LDAP objects corresponding to custom filter",
 				zap.String("targetGroup", targetGroup),
 				zap.String("filter", filter),
@@ -338,6 +350,7 @@ func (s *LdapStore) runDiscovery(targetGroup string) ([]LdapObject, error) {
 				res, resultsErr = s.getResults(targetGroup, baseDn, filter, attributesList)
 				allEntries = append(allEntries, res...)
 			}
+			metrics.MetricGroupNumObjects.WithLabelValues(targetGroup).Set(float64(len(allEntries)))
 		}
 
 		if resultsErr != nil {
