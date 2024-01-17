@@ -1,6 +1,6 @@
 # Changelog
 
-## Version 0.4.3
+## 0.4.3
 - bugfix: Fixed problem with filters so that both the global filter and the target-group level filters are applied to searches.  Previously, if a global filter was set, the target-group filter was ignored.
 - feature: Added new `ldap_sd_target_group_num_objects` metric to track the number of targets found in each configured target group
 
